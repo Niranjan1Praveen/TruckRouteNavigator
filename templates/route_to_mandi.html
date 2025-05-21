@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+
+{% block title %}Route to Mandi - Truck Mandi Tracker{% endblock %}
+
+{% block head_extra %}
+<style>
+    .map-container {
+        height: calc(100vh - 200px);
+        width: 100%;
+        position: relative;
+    }
+    
+    #map {
+        height: 100%;
+        width: 100%;
+        z-index: 1;
+    }
+    
+    .route-panel {
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        z-index: 1000;
+        width: 370px;
+        background-color: rgba(33, 37, 41, 0.9);
+        border-radius: 8px;
+        padding: 15px;
+        box-shadow: 0 0 15px rgba(0, 0, 0, 0.4);
+    }
+    
+    .route-info {
+        display: none;
+        margin-top: 15px;
+        padding: 10px;
+        border-radius: 8px;
+        background-color: rgba(45, 55, 60, 0.8);
+    }
+    
+    .route-info.active {
+        display: block;
+    }
+    
+    .route-progress {
+        height: 12px;
+        border-radius: 6px;
+        margin: 15px 0;
+        overflow: hidden;
+    }
+    
+    .route-stat {
+        padding: 12px;
+        margin-bottom: 10px;
+        border-radius: 6px;
+        background-color: rgba(60, 70, 75, 0.6);
+    }
+    
+    .truck-icon {
+        font-size: 20px;
+        color: #0d6efd;
+    }
+    
+    .user-icon {
+        font-size: 20px;
+        color: #dc3545;
+    }
+    
+    .mandi-icon {
+        font-size: 20px;
+        color: #28a745;
+    }
+    
+    .journey-segment {
+        display: flex;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+    
+    .journey-line {
+        flex-grow: 1;
+        height: 4px;
+        background: #0d6efd;
+        margin: 0 10px;
+        position: relative;
+    }
+    
+    .active-truck {
+        animation: pulse 1.5s infinite;
+        font-size: 22px;
+    }
+    
+    @keyframes pulse {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.2); }
+        100% { transform: scale(1); }
+    }
+    
+    /* Truck marker animation */
+    .animated-truck {
+        animation: moveForward 20s linear forwards;
+    }
+    
+    @keyframes moveForward {
+        0% { opacity: 1; }
+        100% { opacity: 1; }
+    }
+    
+    /* Custom marker styles */
+    .origin-marker {
+        background-color: #0d6efd;
+        border-radius: 50%;
+        border: 2px solid white;
+        color: white;
+        font-size: 18px;
+        text-align: center;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .user-marker {
+        background-color: #dc3545;
+        border-radius: 50%;
+        border: 2px solid white;
+        color: white;
+        font-size: 18px;
+        text-align: center;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .mandi-marker {
+        background-color: #28a745;
+        border-radius: 50%;
+        border: 2px solid white;
+        color: white;
+        font-size: 18px;
+        text-align: center;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .estimated-arrival {
+        font-size: 28px;
+        font-weight: bold;
+        margin-right: 8px;
+    }
+    
+    .arrival-header {
+        color: #adb5bd;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-12">
+        <h1 class="h3 mb-0">
+            <i class="fas fa-route text-primary me-2"></i>Find Route to Mandi
+        </h1>
+        <p class="text-muted">Get the shortest route with truck pickup at your location</p>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col-md-6 mb-3">
+        <label for="user-location" class="form-label"><i class="fas fa-map-marker-alt me-1"></i>Your Location</label>
+        <div class="input-group">
+            <input type="text" id="user-location-lat" class="form-control" placeholder="Latitude (e.g., 28.6139)" value="{{ positions.user.lat }}">
+            <input type="text" id="user-location-lng" class="form-control" placeholder="Longitude (e.g., 77.2090)" value="{{ positions.user.lon }}">
+            <button id="use-my-location" class="btn btn-outline-secondary" type="button">
+                <i class="fas fa-crosshairs me-1"></i>Use My Location
+            </button>
+        </div>
+        <small class="text-muted">Enter your coordinates or click to detect your location</small>
+    </div>
+    
+    <div class="col-md-6 mb-3">
+        <label for="mandi-select" class="form-label"><i class="fas fa-store me-1"></i>Select Destination Mandi</label>
+        <div class="input-group">
+            <select id="mandi-select" class="form-select">
+                <option value="" selected disabled>Select a mandi destination</option>
+                {% for mandi in mandi_names %}
+                <option value="{{ mandi }}">{{ mandi }} Mandi</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+    
+    <div class="col-12">
+        <button id="get-route-btn" class="btn btn-primary">
+            <i class="fas fa-directions me-1"></i>Calculate Route
+        </button>
+    </div>
+</div>
+
+<div class="map-container">
+    <div id="map">{{ map_html|safe }}</div>
+    
+    <div class="route-panel">
+        <div id="route-info" class="route-info">
+            <div class="d-flex align-items-center justify-content-between mb-3">
+                <div>
+                    <div class="arrival-header">ARRIVING IN</div>
+                    <div class="d-flex align-items-center">
+                        <span id="eta-value" class="estimated-arrival">--</span>
+                        <span>mins</span>
+                    </div>
+                </div>
+                <div>
+                    <i class="fas fa-truck fa-2x"></i>
+                </div>
+            </div>
+            
+            <div class="route-progress">
+                <div id="progress-bar" class="progress-bar bg-info" role="progressbar" style="width: 0%"></div>
+            </div>
+            
+            <div class="journey-container">
+                <div class="journey-segment">
+                    <div class="truck-icon">
+                        <i class="fas fa-truck active-truck"></i>
+                    </div>
+                    <div class="journey-line"></div>
+                    <div class="user-icon">
+                        <i class="fas fa-user"></i>
+                    </div>
+                </div>
+                <div class="journey-segment">
+                    <div class="user-icon">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <div class="journey-line"></div>
+                    <div class="mandi-icon">
+                        <i class="fas fa-store"></i>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="mandi-destination" class="route-stat">
+                <h6 id="route-title">To: <span id="mandi-name" class="text-info"></span> Mandi</h6>
+            </div>
+            
+            <div class="d-flex mt-2">
+                <div class="route-stat flex-grow-1 me-2">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span><i class="fas fa-road me-2"></i>Distance:</span>
+                        <span id="route-distance" class="fw-bold"></span>
+                    </div>
+                </div>
+                
+                <div class="route-stat flex-grow-1">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span><i class="fas fa-clock me-2"></i>ETA:</span>
+                        <span id="route-duration" class="fw-bold"></span>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="alert-proximity" class="alert alert-warning mt-3 d-none">
+                <i class="fas fa-bell me-2"></i>You are within 1km of your destination!
+            </div>
+        </div>
+        
+        <div id="route-instructions" class="mt-3">
+            <p class="text-center mb-0">
+                <i class="fas fa-info-circle me-2 text-info"></i>
+                Select a mandi from the dropdown menu above and click "Get Route"
+            </p>
+        </div>
+    </div>
+</div>
+
+<!-- Hidden inputs to store positions -->
+<input type="hidden" id="truck-origin-lat" value="{{ positions.truck.lat }}">
+<input type="hidden" id="truck-origin-lng" value="{{ positions.truck.lon }}">
+<input type="hidden" id="user-lat" value="{{ positions.user.lat }}">
+<input type="hidden" id="user-lng" value="{{ positions.user.lon }}">
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/route_to_mandi.js') }}"></script>
+{% endblock %}
