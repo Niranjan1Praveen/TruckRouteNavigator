@@ -4,6 +4,7 @@ import folium
 from supabase import create_client
 from math import radians, cos, sin, sqrt, atan2
 from dotenv import load_dotenv
+from flask import render_template
 
 load_dotenv()
 app = Flask(__name__)
@@ -54,6 +55,121 @@ def map_view():
             icon=folium.Icon(color="blue", icon="user", prefix="fa")
         ).add_to(m)
 
+    # Fetch mandi data from MandiLatLong table
+    mandis = supabase.table("MandiLatLong").select("Mandi, Mandi_Hindi, Latitude, Longitude").execute().data or []
+
+    # Find nearest mandi to the latest user
+    nearest_mandi = None
+    min_mandi_distance = float("inf")
+    nearest_mandi_lat = nearest_mandi_lon = None
+
+    if current_user_lat is not None and current_user_lon is not None:
+        for mandi in mandis:
+            lat = mandi.get("Latitude")
+            lon = mandi.get("Longitude")
+            if lat is None or lon is None:
+                continue
+            distance = haversine(current_user_lat, current_user_lon, lat, lon)
+            if distance < min_mandi_distance:
+                min_mandi_distance = distance
+                nearest_mandi = mandi
+                nearest_mandi_lat = lat
+                nearest_mandi_lon = lon
+
+    # Add mandi markers to the map
+    for mandi in mandis:
+        lat = mandi.get("Latitude")
+        lon = mandi.get("Longitude")
+        mandi_name = mandi.get("Mandi", "Unnamed Mandi")
+        mandi_name_hindi = mandi.get("Mandi_Hindi", "नाम उपलब्ध नहीं")
+
+        # Skip if coordinates are missing or invalid
+        if lat is None or lon is None or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            print(f"Skipping mandi {mandi_name} due to invalid or missing coordinates")
+            continue
+
+        # Determine if this is the nearest mandi
+        is_nearest_mandi = nearest_mandi and mandi.get("Mandi") == nearest_mandi.get("Mandi")
+
+        # Use a custom DivIcon for the nearest mandi
+        if is_nearest_mandi:
+            marker_html = f"""
+            <div id="nearest_mandi_marker">
+                <i class="fa fa-shop" style="color: purple; font-size: 24px;"></i>
+            </div>
+            """
+            marker = folium.Marker(
+                location=[lat, lon],
+                popup=f"🏬 Nearest Mandi: {mandi_name}<br>{mandi_name_hindi}",
+                icon=folium.DivIcon(html=marker_html)
+            ).add_to(m)
+        else:
+            folium.Marker(
+                location=[lat, lon],
+                popup=f"🏬 {mandi_name}<br>{mandi_name_hindi}",
+                icon=folium.Icon(color="orange", icon="shop", prefix="fa")
+            ).add_to(m)
+
+    # Add animation for the nearest mandi if it exists
+    if nearest_mandi and current_user_lat is not None and current_user_lon is not None:
+        # Calculate a point slightly closer to the user (move 10% of the distance)
+        delta_lat = (current_user_lat - nearest_mandi_lat) * 0.1
+        delta_lon = (current_user_lon - nearest_mandi_lon) * 0.1
+        intermediate_lat = nearest_mandi_lat + delta_lat
+        intermediate_lon = nearest_mandi_lon + delta_lon
+
+        # JavaScript to animate the nearest mandi marker
+        mandi_animation_js = f"""
+        <script>
+        var map = window._folium_map;
+        map.whenReady(function() {{
+            var markerElement = document.getElementById("nearest_mandi_marker");
+            if (markerElement) {{
+                var marker = null;
+                map.eachLayer(function(layer) {{
+                    if (layer._icon && layer._icon.contains(markerElement)) {{
+                        marker = layer;
+                    }}
+                }});
+
+                if (marker) {{
+                    console.log("Nearest mandi marker found, starting animation");
+                    var originalPos = L.latLng({nearest_mandi_lat}, {nearest_mandi_lon});
+                    var intermediatePos = L.latLng({intermediate_lat}, {intermediate_lon});
+                    var movingForward = true;
+                    var progress = 0;
+                    var speed = 0.002;
+
+                    function animateMarker() {{
+                        if (movingForward) {{
+                            progress += speed;
+                            if (progress >= 1) {{
+                                progress = 1;
+                                movingForward = false;
+                            }}
+                        }} else {{
+                            progress -= speed;
+                            if (progress <= 0) {{
+                                progress = 0;
+                                movingForward = true;
+                            }}
+                        }}
+
+                        var lat = originalPos.lat + (intermediatePos.lat - originalPos.lat) * progress;
+                        var lng = originalPos.lng + (intermediatePos.lng - originalPos.lng) * progress;
+                        marker.setLatLng([lat, lng]);
+
+                        requestAnimationFrame(animateMarker);
+                    }}
+
+                    animateMarker();
+                }}
+            }}
+        }});
+        </script>
+        """
+        m.get_root().html.add_child(folium.Element(mandi_animation_js))
+
     # Fetch trucks data
     trucks = supabase.table("Truck").select("*").execute().data or []
 
@@ -94,7 +210,7 @@ def map_view():
 
         is_nearest = nearest_truck and truck.get("id") == nearest_truck.get("id")
         color = "red" if is_nearest else "green"
-        icon = "star" if is_nearest else "truck"
+        icon = "truck"
 
         # Add a dotted line between the user and the nearest truck
         if is_nearest:
@@ -105,16 +221,14 @@ def map_view():
                 dash_array="5, 10"  # Creates a dotted line
             ).add_to(m)
 
-        # Add the marker, and for the nearest truck, store its Leaflet ID for animation
-        marker = folium.Marker(
+        # Add marker for all trucks, including nearest, with consistent truck icon
+        folium.Marker(
             location=[lat, lon],
             popup=f"🚛 {'Nearest Truck: ' if is_nearest else ''}{name}",
-            icon=folium.Icon(color=color, icon=icon, prefix="fa")
+            icon=folium.Icon(color=color, icon=icon, prefix="fa"),
+            # Add a custom class for the nearest truck to enable animation
+            **({"icon_class": "nearest_truck_marker"} if is_nearest else {})
         ).add_to(m)
-
-        # Store the Leaflet marker ID for the nearest truck
-        if is_nearest:
-            nearest_truck_marker_id = marker._id
 
     # Add animation for the nearest truck if it exists
     if nearest_truck and current_user_lat is not None and current_user_lon is not None:
@@ -127,49 +241,56 @@ def map_view():
         # JavaScript to animate the nearest truck marker
         animation_js = f"""
         <script>
-        document.addEventListener("DOMContentLoaded", function() {{
-            var map = window._folium_map;
-            var marker = null;
+        var map = window._folium_map;
+        map.whenReady(function() {{
+            var markerElement = document.getElementsByClassName("nearest_truck_marker")[0];
+            if (markerElement) {{
+                // Find the Leaflet marker associated with this element
+                var marker = null;
+                map.eachLayer(function(layer) {{
+                    if (layer._icon && layer._icon.contains(markerElement)) {{
+                        marker = layer;
+                    }}
+                }});
 
-            // Find the marker by its Leaflet ID
-            map.eachLayer(function(layer) {{
-                if (layer._leaflet_id === "{nearest_truck_marker_id}") {{
-                    marker = layer;
-                }}
-            }});
+                if (marker) {{
+                    console.log("Nearest truck marker found, starting animation");
+                    var originalPos = L.latLng({nearest_truck_lat}, {nearest_truck_lon});
+                    var intermediatePos = L.latLng({intermediate_lat}, {intermediate_lon});
+                    var movingForward = true;
+                    var progress = 0;
+                    var speed = 0.002;  // Slower speed for smooth animation
 
-            if (marker) {{
-                var originalPos = L.latLng({nearest_truck_lat}, {nearest_truck_lon});
-                var intermediatePos = L.latLng({intermediate_lat}, {intermediate_lon});
-                var movingForward = true;
-                var progress = 0;
-                var speed = 0.005;  // Slower speed for smooth animation
-
-                function animateMarker() {{
-                    if (movingForward) {{
-                        progress += speed;
-                        if (progress >= 1) {{
-                            progress = 1;
-                            movingForward = false;
+                    function animateMarker() {{
+                        if (movingForward) {{
+                            progress += speed;
+                            if (progress >= 1) {{
+                                progress = 1;
+                                movingForward = false;
+                            }}
+                        }} else {{
+                            progress -= speed;
+                            if (progress <= 0) {{
+                                progress = 0;
+                                movingForward = true;
+                            }}
                         }}
-                    }} else {{
-                        progress -= speed;
-                        if (progress <= 0) {{
-                            progress = 0;
-                            movingForward = true;
-                        }}
+
+                        // Interpolate between original and intermediate positions
+                        var lat = originalPos.lat + (intermediatePos.lat - originalPos.lat) * progress;
+                        var lng = originalPos.lng + (intermediatePos.lng - originalPos.lng) * progress;
+                        marker.setLatLng([lat, lng]);
+
+                        requestAnimationFrame(animateMarker);
                     }}
 
-                    // Interpolate between original and intermediate positions
-                    var lat = originalPos.lat + (intermediatePos.lat - originalPos.lat) * progress;
-                    var lng = originalPos.lng + (intermediatePos.lng - originalPos.lng) * progress;
-                    marker.setLatLng([lat, lng]);
-
-                    requestAnimationFrame(animateMarker);
+                    // Start the animation
+                    animateMarker();
+                }} else {{
+                    console.log("Nearest truck marker not found");
                 }}
-
-                // Start the animation
-                animateMarker();
+            }} else {{
+                console.log("Nearest truck marker element not found in DOM");
             }}
         }});
         </script>
@@ -189,16 +310,17 @@ def map_view():
         border-radius: 5px;
         font-size: 14px;
         font-family: Arial, sans-serif;">
-        <b>Nearest Truck Info</b><br>
+        <b>निकटतम ट्रक जानकारी</b><br>
     """
     if distance_km is not None and time_minutes is not None:
-        legend_html += f"Distance: {distance_km:.2f} km<br>Est. Time: {time_minutes:.1f} minutes"
+        legend_html += f"दूरी: {distance_km:.2f} कि.मी.<br>अनुमानित समय: {time_minutes:.1f} मिनट"
     else:
         legend_html += "No nearest truck found"
     legend_html += "</div>"
     m.get_root().html.add_child(folium.Element(legend_html))
 
-    return m._repr_html_()
+    map_html = m._repr_html_()
+    return render_template("index.html", map_html=map_html)
 
 if __name__ == "__main__":
     app.run(debug=True)
